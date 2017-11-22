@@ -60,7 +60,8 @@ struct LLA {
 };
 
 
-class MeshDatabase {
+class MeshDatabase 
+{
 public:
   MeshDatabase(Teuchos::RCP<const Teuchos::Comm<int> > comm, int global_elements_x, int global_elements_y, int procs_x, int procs_y);
 
@@ -74,14 +75,20 @@ public:
   size_t getNumOwnedNodes() const {return ownedNodeGlobalIDs_.dimension(0);}
 
   size_t getNumGhostNodes() const {return ghostNodeGlobalIDs_.dimension(0);}
-  
+
+  size_t getNumOwnedAndGhostNodes() const {return ownedAndGhostNodeGlobalIDs_.dimension(0);}
+
+  size_t getNumOwnedAndGhostElements() const {return ownedAndGhostElementGlobalIDs_.dimension(0);}
 
   // Data accessors
   global_ordinal_view_type getOwnedElementGlobalIDs() {return ownedElementGlobalIDs_;}
   global_ordinal_view_type getGhostElementGlobalIDs() {return ghostElementGlobalIDs_;}
 
   global_ordinal_view_type getOwnedNodeGlobalIDs() {return ownedNodeGlobalIDs_;}
-  global_ordinal_view_type getGhostNodeGloballDs() {return ghostNodeGlobalIDs_;}
+  global_ordinal_view_type getGhostNodeGlobalIDs() {return ghostNodeGlobalIDs_;}
+
+  global_ordinal_view_type getOwnedAndGhostNodeGlobalIDs() {return ownedAndGhostNodeGlobalIDs_;}
+  global_ordinal_view_type getOwnedAndGhostElementGlobalIDs() {return ownedAndGhostElementGlobalIDs_;}
 
   global_ordinal_2d_array_type getOwnedElementToNode() {return ownedElementToNode_;}
   global_ordinal_2d_array_type getGhostElementToNode() {return ghostElementToNode_;}
@@ -89,22 +96,56 @@ public:
   // Debugging output
   void print(std::ostream & oss);
 
+  inline bool nodeIsOwned(GlobalOrdinal idx) {
+    GlobalOrdinal i,j; 
+    ij_from_idx(globalNodes_[0],idx,i,j); 
+    return nodeIsOwned(i,j);
+  }
+
+  inline bool elementIsOwned(GlobalOrdinal idx) {
+    GlobalOrdinal i,j;
+    ij_from_idx(globalElements_[0], idx, i, j);
+    return elementIsOwned(i,j);
+  }
+
+
 private:
 
-  inline bool nodeIsOwned(GlobalOrdinal idx) {GlobalOrdinal i,j; ij_from_idx(globalNodes_[0],idx,i,j); return nodeIsOwned(i,j);}
-  inline bool nodeIsOwned(GlobalOrdinal i, GlobalOrdinal j) { return myNodeStart_[0] <= i &&  i < myNodeStop_[0] && myNodeStart_[1] <= j &&  j < myNodeStop_[0];}
-  inline GlobalOrdinal idx_from_ij(int num_x, GlobalOrdinal i, GlobalOrdinal j) const {return j*num_x+i;}
+  inline bool nodeIsOwned(GlobalOrdinal i, GlobalOrdinal j) { 
+    return myNodeStart_[0] <= i &&  i < myNodeStop_[0] && myNodeStart_[1] <= j &&  j < myNodeStop_[1];
+  }
+
+  inline bool elementIsOwned(GlobalOrdinal i, GlobalOrdinal j) {
+    return myElementStart_[0] <= i && i < myElementStop_[0] && myElementStart_[1] <= j && myElementStop_[1];
+  }
+
+  // TODO: Add elementIsOwned()  (useful for Type-3 Assembly)
+
+
+  inline GlobalOrdinal idx_from_ij(int num_x, GlobalOrdinal i, GlobalOrdinal j) const {
+    return j*num_x+i;
+  }
+
   inline void ij_from_idx(int num_x, GlobalOrdinal idx, GlobalOrdinal &i, GlobalOrdinal&j) const { 
     i = idx%num_x;
     j = (GlobalOrdinal)((idx-i)/num_x);
   }
 
+  void initializeOwnedAndGhostNodeGlobalIDs(void);
+
+  void initializeOwnedAndGhostElementGlobalIDs(void);
+
+
   global_ordinal_view_type ownedElementGlobalIDs_;
   global_ordinal_view_type ghostElementGlobalIDs_;
+
   global_ordinal_view_type ownedNodeGlobalIDs_;
   global_ordinal_view_type ghostNodeGlobalIDs_;
 
-  global_ordinal_2d_array_type ownedElementToNode_;  
+  global_ordinal_view_type ownedAndGhostNodeGlobalIDs_;
+  global_ordinal_view_type ownedAndGhostElementGlobalIDs_;
+
+  global_ordinal_2d_array_type ownedElementToNode_;
   global_ordinal_2d_array_type ghostElementToNode_;
 
   // Global Mesh Info
@@ -192,7 +233,6 @@ MeshDatabase::MeshDatabase(Teuchos::RCP<const Teuchos::Comm<int> > comm, int glo
     }
   }
   
-  
   // Generate the list of "ghost" elements & ghostElement2NodeMap
   // NOTE: This only generates a halo for elements where I own at least one node.  On the x/y hi sides,
   // the highers element does not own all the nodes on that proc.  Ergo, no halo in that direction
@@ -233,14 +273,54 @@ MeshDatabase::MeshDatabase(Teuchos::RCP<const Teuchos::Comm<int> > comm, int glo
   for(size_t k=0; k<ownedElementToNode_.dimension(0); k++) {
     for(size_t l=0; l<ownedElementToNode_.dimension(1); l++) {
       GlobalOrdinal nidx=ownedElementToNode_(k,l);
-      if(!nodeIsOwned(nidx)) 
+      if(!nodeIsOwned(nidx)) {
         my_ghost_nodes.insert(nidx);
+      }
     }
   }
+  
   Kokkos::resize(ghostNodeGlobalIDs_,my_ghost_nodes.size());
   for(auto k=my_ghost_nodes.begin(); k!=my_ghost_nodes.end(); k++) {
     size_t kk = distance(my_ghost_nodes.begin(),k);
     ghostNodeGlobalIDs_(kk) = *k;
+  }
+
+  initializeOwnedAndGhostNodeGlobalIDs();
+  initializeOwnedAndGhostElementGlobalIDs();
+}
+
+
+void MeshDatabase::initializeOwnedAndGhostNodeGlobalIDs(void)
+{
+  size_t total_size = getNumOwnedNodes() + getNumGhostNodes();
+
+  Kokkos::resize(ownedAndGhostNodeGlobalIDs_, total_size);
+
+  size_t insert_idx = 0;
+  for(size_t idx=0; idx < getNumOwnedNodes(); idx++)
+  {
+    ownedAndGhostNodeGlobalIDs_(insert_idx++) = getOwnedNodeGlobalIDs()(idx);
+  }
+  for(size_t idx=0; idx < getNumGhostNodes(); idx++)
+  {
+    ownedAndGhostNodeGlobalIDs_(insert_idx++) = getGhostNodeGlobalIDs()(idx);
+  }
+}
+
+
+void MeshDatabase::initializeOwnedAndGhostElementGlobalIDs(void)
+{
+  size_t total_size = getNumOwnedElements() + getNumGhostElements();
+  Kokkos::resize(ownedAndGhostElementGlobalIDs_, total_size);
+
+  size_t insert_idx = 0;
+  for(size_t idx=0; idx<getNumOwnedElements(); idx++)
+  {
+    ownedAndGhostElementGlobalIDs_(insert_idx++) = getOwnedElementGlobalIDs()(idx);
+  }
+  for(size_t idx=0; idx<getNumGhostElements(); idx++)
+  {
+    ownedAndGhostElementGlobalIDs_(insert_idx++) = getGhostElementGlobalIDs()(idx);
   }
 }
 
@@ -251,39 +331,56 @@ void MeshDatabase::print(std::ostream & oss)
   std::ostringstream ss;
   ss<<"["<<MyRank_<<","<<myProcIJ_[0]<<","<<myProcIJ_[1]<<"]";
   oss<<ss.str()<<" Global Elements = ["<<globalElements_[0]<<"x"<<globalElements_[1]<<"] Nodes ="<<globalNodes_[0]<<"x"<<globalNodes_[1]<<"]\n";
-  oss<<ss.str()<<" Stop/Start Elements = ["<<myElementStart_[0]<<","<<myElementStop_[0]<<")x["<<myElementStart_[1]<<","<<myElementStop_[1]<<")\n";
-  oss<<ss.str()<<" Stop/Start Nodes    = ["<<myNodeStart_[0]<<","<<myNodeStop_[0]<<")x["<<myNodeStart_[1]<<","<<myNodeStop_[1]<<")\n";
+  oss<<ss.str()<<" Stop/Start Elements   = ["<<myElementStart_[0]<<","<<myElementStop_[0]<<")x["<<myElementStart_[1]<<","<<myElementStop_[1]<<")\n";
+  oss<<ss.str()<<" Stop/Start Nodes      = ["<<myNodeStart_[0]<<","<<myNodeStop_[0]<<")x["<<myNodeStart_[1]<<","<<myNodeStop_[1]<<")\n";
 
   oss<<ss.str()<<" Owned Global Elements = ";
-  for(size_t i=0; i<ownedElementGlobalIDs_.dimension(0); i++)
+  for(size_t i=0; i<ownedElementGlobalIDs_.dimension(0); i++) {
     oss<<ownedElementGlobalIDs_[i]<<" ";
+  }
 
-  oss<<"\n"<<ss.str()<<" Owned Global Nodes   = ";
-  for(size_t i=0; i<ownedNodeGlobalIDs_.dimension(0); i++)
+  oss<<"\n"<<ss.str()<<" Owned Global Nodes    = ";
+  for(size_t i=0; i<ownedNodeGlobalIDs_.dimension(0); i++) {
     oss<<ownedNodeGlobalIDs_[i]<<" ";
+  }
 
-  oss<<"\n"<<ss.str()<<" Owned Element2Node   = ";
+  oss<<"\n"<<ss.str()<<" Owned Element2Node    = ";
   for(size_t i=0; i<ownedElementToNode_.dimension(0); i++) {
     oss<<"(";
-    for(size_t j=0; j<ownedElementToNode_.dimension(1); j++)
+    for(size_t j=0; j<ownedElementToNode_.dimension(1); j++) {
       oss<<ownedElementToNode_(i,j)<<" ";
+    }
     oss<<") ";
-  }      
+  }
 
   oss<<"\n"<<ss.str()<<" Ghost Global Elements = ";
-  for(size_t i=0; i<ghostElementGlobalIDs_.dimension(0); i++)
+  for(size_t i=0; i<ghostElementGlobalIDs_.dimension(0); i++) {
     oss<<ghostElementGlobalIDs_[i]<<" ";
+  }
   oss<<"\n"<<ss.str()<<" Ghost Global Nodes    = ";
-  for(size_t i=0; i<ghostNodeGlobalIDs_.dimension(0); i++)
+  for(size_t i=0; i<ghostNodeGlobalIDs_.dimension(0); i++) {
     oss<<ghostNodeGlobalIDs_[i]<<" ";
+  }
 
-  oss<<"\n"<<ss.str()<<" Ghost Element2Node   = ";
+  oss<<"\n"<<ss.str()<<" Ghost Element2Node    = ";
   for(size_t i=0; i<ghostElementToNode_.dimension(0); i++) {
     oss<<"(";
-    for(size_t j=0; j<ghostElementToNode_.dimension(1); j++)
+    for(size_t j=0; j<ghostElementToNode_.dimension(1); j++) {
       oss<<ghostElementToNode_(i,j)<<" ";
+    }
     oss<<") ";
   }      
+
+  oss << "\n"<<ss.str()<<" Owned And Ghost Nodes = ";
+  for(size_t i=0; i<ownedAndGhostNodeGlobalIDs_.dimension(0); i++) {
+    oss << ownedAndGhostNodeGlobalIDs_[i]<<" ";
+  }
+
+  oss << "\n"<<ss.str()<<" Owned And Ghost Elements = ";
+  for(size_t i=0; i<ownedAndGhostElementGlobalIDs_.dimension(0); i++) {
+    oss << ownedAndGhostElementGlobalIDs_[i]<<" ";
+  }
+
   oss<<std::endl;
 }
 
