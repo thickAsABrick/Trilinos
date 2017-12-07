@@ -87,6 +87,18 @@
 
 #include <MueLu_CreateXpetraPreconditioner.hpp>
 
+#include "MueLu_CoupledAggregationFactory.hpp"
+#include "MueLu_CoalesceDropFactory_kokkos.hpp"
+#include "MueLu_AmalgamationFactory.hpp"
+#include "MueLu_TentativePFactory.hpp"
+#include "MueLu_TrilinosSmoother.hpp"
+#include "MueLu_Utilities.hpp"
+#include "MueLu_TransPFactory.hpp"
+#include "MueLu_RAPFactory.hpp"
+#include "MueLu_SmootherFactory.hpp"
+#include "MueLu_CoarseMapFactory.hpp"
+#include "MueLu_UncoupledAggregationFactory_kokkos.hpp"
+
 
 /*********************************************************************/
 // Support for ML interface
@@ -167,6 +179,7 @@ int main_(Teuchos::CommandLineProcessor &clp, Xpetra::UnderlyingLib& lib, int ar
   int         numRebuilds       = 0;                 clp.setOption("rebuild",               &numRebuilds,       "#times to rebuild hierarchy");
   int         maxIts            = 200;               clp.setOption("its",                   &maxIts,            "maximum number of solver iterations");
   bool        scaleResidualHist = true;              clp.setOption("scale", "noscale",      &scaleResidualHist, "scaled Krylov residual history");
+  std::string phase1Algo = "serial";                 clp.setOption("phase1algo",            &phase1Algo,        "algorithm for phase 1 aggregation");
 
   clp.recogniseAllOptions(true);
   switch (clp.parse(argc, argv)) {
@@ -444,7 +457,41 @@ int main_(Teuchos::CommandLineProcessor &clp, Xpetra::UnderlyingLib& lib, int ar
 #endif
         }
         else {
-          H = MueLu::CreateXpetraPreconditioner(A, mueluList, coordinates, nullspace);
+          //H = MueLu::CreateXpetraPreconditioner(A, mueluList, coordinates);
+///////////////////////////////////
+          typedef Teuchos::ScalarTraits<Scalar> TST;
+          //typedef TestHelpers::TestFactory<Scalar, LocalOrdinal, GlobalOrdinal, Node> test_factory;
+
+          Level fineLevel, coarseLevel;
+          fineLevel.SetLevelID(0);
+          coarseLevel.SetLevelID(1);
+
+          coarseLevel.SetPreviousLevel(rcpFromRef(fineLevel));
+
+          fineLevel.SetFactoryManager(Teuchos::null);  // factory manager is not used on this test
+          coarseLevel.SetFactoryManager(Teuchos::null);
+
+          fineLevel.Request("A");
+          fineLevel.Set("A",A);
+
+          LocalOrdinal NSdim = 3;
+          RCP<MultiVector> nullSpace = MultiVectorFactory::Build(A->getRowMap(),NSdim);
+          nullSpace->randomize();
+          fineLevel.Set("Nullspace",nullspace);
+          fineLevel.Set("DofsPerNode",1);
+
+          RCP<AmalgamationFactory> amalgFact = rcp(new AmalgamationFactory());
+          RCP<CoalesceDropFactory_kokkos> dropFact = rcp(new CoalesceDropFactory_kokkos());
+          dropFact->SetFactory("UnAmalgamationInfo", amalgFact);
+          RCP<UncoupledAggregationFactory_kokkos> UnCoupledAggFact = rcp(new UncoupledAggregationFactory_kokkos());
+          UnCoupledAggFact->SetFactory("Graph", dropFact);
+          UnCoupledAggFact->SetParameter("aggregation: phase 1 algorithm", Teuchos::ParameterEntry(std::string("Distance2")));
+
+          fineLevel.Request("Aggregates", UnCoupledAggFact.get());
+          fineLevel.Request(*UnCoupledAggFact);
+          UnCoupledAggFact->Build(fineLevel);
+
+          ///////////////////////////////////
         }
       }
 

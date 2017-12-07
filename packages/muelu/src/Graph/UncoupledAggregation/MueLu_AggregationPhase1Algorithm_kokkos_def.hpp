@@ -70,8 +70,11 @@ namespace MueLu {
   template <class LocalOrdinal, class GlobalOrdinal, class Node>
   void AggregationPhase1Algorithm_kokkos<LocalOrdinal, GlobalOrdinal, Node>::
   BuildAggregates(const ParameterList& params, const LWGraph_kokkos& graph, Aggregates_kokkos& aggregates, std::vector<unsigned>& aggStat,
-                  LO& numNonAggregatedNodes) const {
+                  LO& numNonAggregatedNodes, typename LWGraph_kokkos::local_graph_type::entries_type::non_const_type::HostMirror& h_colors) const {
     Monitor m(*this, "BuildAggregates");
+
+    std::cout << "Parameter list in Phase 1:" << std::endl;
+    params.print(std::cout);
 
     std::string orderingStr     = params.get<std::string>("aggregation: ordering");
     int maxNeighAlreadySelected = params.get<int>        ("aggregation: max selected neighbors");
@@ -79,7 +82,7 @@ namespace MueLu {
     int maxNodesPerAggregate    = params.get<int>        ("aggregation: max agg size");
 
     Algorithm algorithm         = Algorithm::Serial;
-    std::string algoParamName = "aggregation: phase 1 algorithm";
+    std::string algoParamName   = "aggregation: phase 1 algorithm";
     if(params.isParameter(algoParamName))
     {
       algorithm = algorithmFromName(params.get<std::string>("aggregation: phase 1 algorithm"));
@@ -93,10 +96,12 @@ namespace MueLu {
     //can only enforce max aggregate size
     if(algorithm == Algorithm::Distance2)
     {
-      BuildAggregatesDistance2(graph, aggregates, aggStat, numNonAggregatedNodes, maxNodesPerAggregate);
+      std::cout << "Using distance 2 phase 1" << std::endl;
+      BuildAggregatesDistance2(graph, aggregates, aggStat, numNonAggregatedNodes, maxNodesPerAggregate, h_colors);
     }
     else
     {
+      std::cout << "Using serial phase 1" << std::endl;
       BuildAggregatesSerial(graph, aggregates, aggStat, numNonAggregatedNodes,
           minNodesPerAggregate, maxNodesPerAggregate, maxNeighAlreadySelected, orderingStr);
     }
@@ -266,7 +271,8 @@ namespace MueLu {
   template <class LocalOrdinal, class GlobalOrdinal, class Node>
   void AggregationPhase1Algorithm_kokkos<LocalOrdinal, GlobalOrdinal, Node>::
   BuildAggregatesDistance2(const LWGraph_kokkos& graph, Aggregates_kokkos& aggregates,
-      std::vector<unsigned>& aggStat, LO& numNonAggregatedNodes, LO maxAggSize) const
+                           std::vector<unsigned>& aggStat, LO& numNonAggregatedNodes, LO maxAggSize,
+                           typename LWGraph_kokkos::local_graph_type::entries_type::non_const_type::HostMirror& h_colors) const
   {
     const LO  numRows = graph.GetNodeNumVertices();
     const int myRank  = graph.GetComm()->getRank();
@@ -337,8 +343,8 @@ namespace MueLu {
     auto coloringHandle = kh.get_graph_coloring_handle();
     auto colorsDevice = coloringHandle->get_vertex_colors();
 
-    auto colors = Kokkos::create_mirror_view(colorsDevice);
-    Kokkos::deep_copy(colors, colorsDevice);
+    h_colors = Kokkos::create_mirror_view(colorsDevice);
+    Kokkos::deep_copy(h_colors, colorsDevice);
 
     //clean up coloring handle
     kh.destroy_graph_coloring_handle();
@@ -347,7 +353,7 @@ namespace MueLu {
     LocalOrdinal aggCount = 0;
     for(LocalOrdinal i = 0; i < numRows; i++)
     {
-      if(colors(i) == 1 && aggStat[i] == READY)
+      if(h_colors(i) == 1 && aggStat[i] == READY)
       {
         vertex2AggId[i] = aggCount++;
         aggStat[i] = AGGREGATED;
@@ -365,7 +371,7 @@ namespace MueLu {
     //now assign every READY vertex to a directly connected root
     for(LocalOrdinal i = 0; i < numRows; i++)
     {
-      if(colors(i) != 1 && (aggStat[i] == READY || aggStat[i] == NOTSEL))
+      if(h_colors(i) != 1 && (aggStat[i] == READY || aggStat[i] == NOTSEL))
       {
         //get neighbors of vertex i and
         //look for local, aggregated, color 1 neighbor (valid root)
@@ -374,7 +380,7 @@ namespace MueLu {
         {
           auto nei = neighbors.colidx(j);
           LocalOrdinal agg = vertex2AggId[nei];
-          if(graph.isLocalNeighborVertex(nei) && colors(nei) == 1 && aggStat[nei] == AGGREGATED && aggSizes[agg] < maxAggSize)
+          if(graph.isLocalNeighborVertex(nei) && h_colors(nei) == 1 && aggStat[nei] == AGGREGATED && aggSizes[agg] < maxAggSize)
           {
             //assign vertex i to aggregate with root j
             vertex2AggId[i] = agg;
