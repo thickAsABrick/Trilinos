@@ -274,33 +274,7 @@ namespace MueLu {
                            std::vector<unsigned>& aggStat, LO& numNonAggregatedNodes, LO maxAggSize,
                            typename LWGraph_kokkos::local_graph_type::entries_type::non_const_type::HostMirror& h_colors) const
   {
-    const LO  numRows = graph.GetNodeNumVertices();
-    const int myRank  = graph.GetComm()->getRank();
-
-    ArrayRCP<LO> vertex2AggId = aggregates.GetVertex2AggId()->getDataNonConst(0);
-    ArrayRCP<LO> procWinner   = aggregates.GetProcWinner()  ->getDataNonConst(0);
-
-    LO numLocalAggregates = aggregates.GetNumAggregates();
-
-    //get the sparse local graph in CRS
-    std::vector<LocalOrdinal> rowptrs;
-    rowptrs.reserve(numRows + 1);
-    std::vector<LocalOrdinal> colinds;
-    colinds.reserve(graph.GetNodeNumEdges());
-
-    rowptrs.push_back(0);
-    for(LocalOrdinal row = 0; row < numRows; row++)
-    {
-      auto entries = graph.getNeighborVertices(row);
-      for(LocalOrdinal i = 0; i < entries.length; i++)
-      {
-        colinds.push_back(entries.colidx(i));
-      }
-      rowptrs.push_back(colinds.size());
-    }
-
-    //the local CRS graph to Kokkos device views, then compute graph squared
-    typedef typename Tpetra::CrsGraph<LocalOrdinal, GlobalOrdinal, Node>::local_graph_type graph_t;
+    typedef typename Tpetra::CrsGraph<LO, GO, Node>::local_graph_type graph_t;
     typedef typename graph_t::device_type device_t;
     typedef typename device_t::memory_space memory_space;
     typedef typename device_t::execution_space execution_space;
@@ -308,6 +282,35 @@ namespace MueLu {
     typedef Kokkos::View<size_t*, Kokkos::HostSpace> host_rowptrs_view;
     typedef typename graph_t::entries_type::non_const_type colinds_view;
     typedef Kokkos::View<LocalOrdinal*, Kokkos::HostSpace> host_colinds_view;
+
+    const LO  numRows = graph.GetNodeNumVertices();
+    const int myRank  = graph.GetComm()->getRank();
+
+    ArrayRCP<LO> vertex2AggId = aggregates.GetVertex2AggId()->getDataNonConst(0);
+    ArrayRCP<LO> procWinner   = aggregates.GetProcWinner()  ->getDataNonConst(0);
+    auto vertex2AggIdView = aggregates.GetVertex2AggId()->template getLocalView<memory_space>();
+    auto procWinnerView = aggregates.GetProcWinner()    ->template getLocalView<memory_space>();
+
+    LO numLocalAggregates = aggregates.GetNumAggregates();
+
+    //get the sparse local graph in CRS
+    std::vector<LO> rowptrs;
+    rowptrs.reserve(numRows + 1);
+    std::vector<LO> colinds;
+    colinds.reserve(graph.GetNodeNumEdges());
+
+    rowptrs.push_back(0);
+    for(LO row = 0; row < numRows; row++)
+    {
+      auto entries = graph.getNeighborVertices(row);
+      for(LO i = 0; i < entries.length; i++)
+      {
+        colinds.push_back(entries.colidx(i));
+      }
+      rowptrs.push_back(colinds.size());
+    }
+
+    //the local CRS graph to Kokkos device views, then compute graph squared
     //note: just using colinds_view in place of scalar_view_t type (it won't be used at all by symbolic SPGEMM)
     typedef KokkosKernels::Experimental::KokkosKernelsHandle<
       typename rowptrs_view::const_value_type, typename colinds_view::const_value_type, typename colinds_view::const_value_type, 
@@ -346,21 +349,33 @@ namespace MueLu {
     h_colors = Kokkos::create_mirror_view(colorsDevice);
     Kokkos::deep_copy(h_colors, colorsDevice);
 
-    //clean up coloring handle
-    kh.destroy_graph_coloring_handle();
-
     //have color 1 (first color) be the aggregate roots (add those to mapping first)
-    LocalOrdinal aggCount = 0;
-    for(LocalOrdinal i = 0; i < numRows; i++)
-    {
-      if(h_colors(i) == 1 && aggStat[i] == READY)
-      {
+    LO aggCount = 0;
+    for(LO i = 0; i < numRows; i++) {
+      if(h_colors(i) == 1 && aggStat[i] == READY) {
         vertex2AggId[i] = aggCount++;
         aggStat[i] = AGGREGATED;
         numLocalAggregates++;
         procWinner[i] = myRank;
       }
     }
+
+    LO numLocalAggregatesKokkos = 0;
+    Kokkos::View<unsigned, memory_space> d_aggStatView("aggStat", aggStat.size());
+    // // Same as above using a parallel_reduce on numLocalAggregates
+    // Kokkos::parallel_reduce(numRows,
+    //                         [=] (const LO i, LO & numLocalAggregatesKokkos) {
+    //                           if(h_colors(i) == 1 && aggStat[i] == READY) {
+    //                             vertex2AggId[i] = aggCount++;
+    //                             aggStat[i] = AGGREGATED;
+    //                             ++numLocalAggregatesKokkos;
+    //                             procWinner[i] = myRank;
+    //                           }
+    //                         });
+
+    //clean up coloring handle
+    kh.destroy_graph_coloring_handle();
+
     numNonAggregatedNodes = 0;
     std::vector<LocalOrdinal> aggSizes(numLocalAggregates, 0);
     for(int i = 0; i < numRows; i++)
