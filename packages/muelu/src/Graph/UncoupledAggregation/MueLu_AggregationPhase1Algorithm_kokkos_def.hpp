@@ -396,8 +396,10 @@ namespace MueLu {
         aggSizes[vertex2AggId[i]]++;
     }
 
-    // This looks like a weird parallel scan that depends on an if statement. I am not exactly sure
-    // how this will be performed but hopefully this is possible/easy to do...
+    // Compute the initial size of the aggregates.
+    // Note lbv 12-21-17: I am pretty sure that the aggregates will always be of size 1
+    //                    at this point so we could simplify the logic below a lot if this
+    //                    assumption is actually correct...
     Kokkos::View<LO*, memory_space> d_aggSizesView("aggSizes", numLocalAggregates);
     {
       auto d_aggSizesScatterView = Kokkos::Experimental::create_scatter_view(d_aggSizesView);
@@ -408,9 +410,15 @@ namespace MueLu {
                                d_aggSizesScatterViewAccess(vertex2AggIdView(i, 0)) += 1;
                            });
       Kokkos::Experimental::contribute(d_aggSizesView, d_aggSizesScatterView);
+      // // debug print outs
+      // Kokkos::parallel_for("check aggSizes", numLocalAggregates,
+      //                      KOKKOS_LAMBDA(const LO i) {
+      //                        std::cout << "d_aggSizesView(" << i << ")= " << d_aggSizesView(i)
+      //                                  << std::endl;
+      //                      });
     }
 
-    //now assign every READY vertex to a directly connected root
+    // Now assign every READY vertex to a directly connected root
     numNonAggregatedNodes = 0;
     for(LO i = 0; i < numRows; i++) {
       if(h_colors(i) != 1 && (aggStat[i] == READY || aggStat[i] == NOTSEL)) {
@@ -437,10 +445,10 @@ namespace MueLu {
       }
     }
 
-    // // First we perform a parallel_reduce over agg_Sizes while assigning vertex2AggIdView,
+    // // First we perform a parallel_reduce over aggSizes while assigning vertex2AggIdView,
     // // d_aggStatView and procWinnerView
     // Kokkos::parallel_reduce("Aggregation Phase 1: main parallel_reduce over aggSizes", numRows,
-    //                         [=] (const size_t i, Kokkos::View<> & d_aggSizesView) {
+    //                         KOKKOS_LAMBDA (const size_t i, Kokkos::View<> & d_aggSizesView) {
     //                           if(colorsDevice(i) != 1
     //                              && (d_aggStatView[i] == READY || d_aggStatView[i] == NOTSEL)) {
     //                             //get neighbors of vertex i and
