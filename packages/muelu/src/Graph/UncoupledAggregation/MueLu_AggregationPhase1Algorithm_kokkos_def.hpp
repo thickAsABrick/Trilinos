@@ -290,6 +290,10 @@ namespace MueLu {
     // auto procWinnerView = aggregates.GetProcWinner()    ->template getLocalView<memory_space>();
     Kokkos::View<LO*[1], memory_space> vertex2AggIdView("vertex2AggIdView", vertex2AggId.size());
     Kokkos::View<LO*[1], memory_space> procWinnerView("procWinne", procWinner.size());
+    Kokkos::parallel_for("Initialize vertex2AggIdView to -1", vertex2AggId.size(),
+                         KOKKOS_LAMBDA (const LO i) { vertex2AggIdView(i, 0) = -1;});
+    Kokkos::parallel_for("Initialize procWinnerView to -1", procWinner.size(),
+                         KOKKOS_LAMBDA (const LO i) { procWinnerView(i, 0) = -1;});
 
     // Set this for comparison with serial code
     LO numNonAggregatedNodesKokkos = numNonAggregatedNodes;
