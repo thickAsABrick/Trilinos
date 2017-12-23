@@ -94,12 +94,12 @@ namespace MueLu {
     //can only enforce max aggregate size
     if(algorithm == Algorithm::Distance2)
     {
-      std::cout << "Using distance 2 algorithm for aggregation phase 1" << std::endl;
+      std::cout << "Uncouple Aggregation: using Distance 2 algorithm for coarsening" << std::endl;
       BuildAggregatesDistance2(graph, aggregates, aggStat, numNonAggregatedNodes, maxNodesPerAggregate, h_colors);
     }
     else
     {
-      std::cout << "Using serial algorithm aggregation phase 1" << std::endl;
+      std::cout << "Uncouple Aggregation: using serial algorithm for coarsening" << std::endl;
       BuildAggregatesSerial(graph, aggregates, aggStat, numNonAggregatedNodes,
           minNodesPerAggregate, maxNodesPerAggregate, maxNeighAlreadySelected, orderingStr);
     }
@@ -286,9 +286,13 @@ namespace MueLu {
 
     ArrayRCP<LO> vertex2AggId = aggregates.GetVertex2AggId()->getDataNonConst(0);
     ArrayRCP<LO> procWinner   = aggregates.GetProcWinner()  ->getDataNonConst(0);
-    auto vertex2AggIdView = aggregates.GetVertex2AggId()->template getLocalView<memory_space>();
-    auto procWinnerView = aggregates.GetProcWinner()    ->template getLocalView<memory_space>();
+    // auto vertex2AggIdView = aggregates.GetVertex2AggId()->template getLocalView<memory_space>();
+    // auto procWinnerView = aggregates.GetProcWinner()    ->template getLocalView<memory_space>();
+    Kokkos::View<LO*[1], memory_space> vertex2AggIdView("vertex2AggIdView", vertex2AggId.size());
+    Kokkos::View<LO*[1], memory_space> procWinnerView("procWinne", procWinner.size());
 
+    // Set this for comparison with serial code
+    LO numNonAggregatedNodesKokkos = numNonAggregatedNodes;
     LO numLocalAggregates = aggregates.GetNumAggregates();
 
     //get the sparse local graph in CRS
@@ -400,22 +404,16 @@ namespace MueLu {
     // Note lbv 12-21-17: I am pretty sure that the aggregates will always be of size 1
     //                    at this point so we could simplify the logic below a lot if this
     //                    assumption is actually correct...
-    Kokkos::View<LO*, memory_space> d_aggSizesView("aggSizes", numLocalAggregates);
+    Kokkos::View<LO*, memory_space> d_aggSizesView("aggSizes", numLocalAggregatesKokkos);
     {
       auto d_aggSizesScatterView = Kokkos::Experimental::create_scatter_view(d_aggSizesView);
       Kokkos::parallel_for("Aggregation Phase 1: initial aggSizes scatter loop", numRows,
-                           KOKKOS_LAMBDA(const LO i) {
+                           KOKKOS_LAMBDA (const LO i) {
                              auto d_aggSizesScatterViewAccess = d_aggSizesScatterView.access();
                              if(vertex2AggIdView(i, 0) >= 0)
                                d_aggSizesScatterViewAccess(vertex2AggIdView(i, 0)) += 1;
                            });
       Kokkos::Experimental::contribute(d_aggSizesView, d_aggSizesScatterView);
-      // // debug print outs
-      // Kokkos::parallel_for("check aggSizes", numLocalAggregates,
-      //                      KOKKOS_LAMBDA(const LO i) {
-      //                        std::cout << "d_aggSizesView(" << i << ")= " << d_aggSizesView(i)
-      //                                  << std::endl;
-      //                      });
     }
 
     // Now assign every READY vertex to a directly connected root
@@ -445,41 +443,57 @@ namespace MueLu {
       }
     }
 
-    // // First we perform a parallel_reduce over aggSizes while assigning vertex2AggIdView,
-    // // d_aggStatView and procWinnerView
-    // Kokkos::parallel_reduce("Aggregation Phase 1: main parallel_reduce over aggSizes", numRows,
-    //                         KOKKOS_LAMBDA (const size_t i, Kokkos::View<> & d_aggSizesView) {
-    //                           if(colorsDevice(i) != 1
-    //                              && (d_aggStatView[i] == READY || d_aggStatView[i] == NOTSEL)) {
-    //                             //get neighbors of vertex i and
-    //                             //look for local, aggregated, color 1 neighbor (valid root)
-    //                             auto neighbors = graph.getNeighborVertices(i); // This needs a 2D View?
-    //                             for(LO j = 0; j < neighbors.length; j++) {
-    //                               auto nei = neighbors.colidx(j);
-    //                               LO agg = vertex2AggIdView[nei];
-    //                               if(graph.isLocalNeighborVertex(nei) && colorsDevice(nei) == 1
-    //                                  && d_aggStatView[nei] == AGGREGATED) {
-    //                                 //assign vertex i to aggregate with root j
-    //                                 vertex2AggIdView[i] = agg;
-    //                                 procWinnerView[i]   = myRank;
-    //                                 d_aggStatView[i]    = AGGREGATED;
-    //                                 ++d_aggSizesView[agg];
-    //                                 break;
-    //                               }
-    //                             }
-    //                           }
-    //                           if(d_aggStatView[i] != AGGREGATED) {
-    //                             // This variable is also reduced in this loop so we should probably
-    //                             // do something like adding it to d_aggSizesView?
-    //                             ++numNonAggregatedNodes_kokkos;
-    //                             if(d_aggStatView[i] == NOTSEL) { d_aggStatView[i] = READY; }
-    //                           }
-    //                         });
+    // debug print outs
+    std::cout << "* -*-*-*-*-*-*-*-*-*-*" << std::endl;
+    std::cout << "Loop over numRows to check vertex data" << std::endl;
+    for(int i = 0; i < numRows; ++i) {
+      std::cout << "i= " << i << ", vertex2AggId= " << vertex2AggId[i]
+                << ", procWinner= " << procWinner[i] << ", aggStat= " << aggStat[i] << std::endl;
+    }
 
-    // Kokkos::parallel_reduce("Aggregation Phase 1: check aggSizes and deaggregate if needed", numRows,
-    //                         [=] () {
+    Kokkos::parallel_reduce("Aggregation Phase 1: main parallel_reduce over aggSizes", numRows,
+                            KOKKOS_LAMBDA (const size_t i, LO & lNumNonAggregatedNodesKokkos) {
+                              if(colorsDevice(i) != 1
+                                 && (d_aggStatView(i) == READY || d_aggStatView(i) == NOTSEL)) {
+                                // Get neighbors of vertex i and look for local, aggregated,
+                                // color 1 neighbor (valid root).
+                                auto neighbors = graph.getNeighborVertices(i);
+                                for(LO j = 0; j < neighbors.length; ++j) {
+                                  auto nei = neighbors.colidx(j);
+                                  LO agg = vertex2AggIdView(nei, 0);
+                                  const LO aggSize = Kokkos::atomic_fetch_add (&d_aggSizesView(agg), 1);
+                                  if(graph.isLocalNeighborVertex(nei) && colorsDevice(nei) == 1
+                                     && d_aggStatView(nei) == AGGREGATED && aggSize < maxAggSize) {
+                                    //assign vertex i to aggregate with root j
+                                    vertex2AggIdView(i, 0) = agg;
+                                    procWinnerView(i, 0)   = myRank;
+                                    d_aggStatView(i)       = AGGREGATED;
+                                    break;
+                                  } else {// Decrement back the value of d_aggSizesView(agg)
+                                    Kokkos::atomic_decrement(&d_aggSizesView(agg));
+                                  }
+                                }
+                              }
+                              if(d_aggStatView(i) != AGGREGATED) {
+                                lNumNonAggregatedNodesKokkos++;
+                                if(d_aggStatView(i) == NOTSEL) { d_aggStatView(i) = READY; }
+                              }
+                            }, numNonAggregatedNodesKokkos);
 
-    //                         });
+    // debug print outs
+    std::cout << "* -*-*-*-*-*-*-*-*-*-*" << std::endl;
+    std::cout << "Loop over kokkos numRows to check vertex data" << std::endl;
+    Kokkos::parallel_for("check phase 1", numRows,
+                         KOKKOS_LAMBDA(const LO i) {
+                           std::cout << "i= " << i
+                                     << ", vertex2AggId= " << vertex2AggIdView(i, 0)
+                                     << ", procWinner= " << procWinnerView(i, 0)
+                                     << ", aggStat= " << d_aggStatView(i)
+                                     << std::endl;
+                         });
+
+    std::cout << "numNonAggregatedNodes= " << numNonAggregatedNodes
+              << ", numNonAggregatedNodesKokkos= " << numNonAggregatedNodesKokkos << std::endl;
 
     // update aggregate object
     aggregates.SetNumAggregates(numLocalAggregates);
