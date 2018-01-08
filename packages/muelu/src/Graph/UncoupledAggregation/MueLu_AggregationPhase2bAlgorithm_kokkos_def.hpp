@@ -65,7 +65,12 @@ namespace MueLu {
   // Try to stick unaggregated nodes into a neighboring aggregate if they are
   // not already too big
   template <class LocalOrdinal, class GlobalOrdinal, class Node>
-  void AggregationPhase2bAlgorithm_kokkos<LocalOrdinal, GlobalOrdinal, Node>::BuildAggregates(const ParameterList& params, const LWGraph_kokkos& graph, Aggregates_kokkos& aggregates, std::vector<unsigned>& aggStat, LO& numNonAggregatedNodes, typename LWGraph_kokkos::local_graph_type::entries_type::non_const_type::HostMirror& h_colors) const {
+  void AggregationPhase2bAlgorithm_kokkos<LocalOrdinal, GlobalOrdinal, Node>::
+  BuildAggregates(const ParameterList& params, const LWGraph_kokkos& graph,
+                  Aggregates_kokkos& aggregates, std::vector<unsigned>& aggStat,
+                  LO& numNonAggregatedNodes, Kokkos::View<LO*,
+                  typename MueLu::LWGraph_kokkos<LO, GO, Node>::local_graph_type::device_type::
+                  memory_space>& colorsDevice, LO& numColors) const {
     Monitor m(*this, "BuildAggregates");
 
     const LO  numRows = graph.GetNodeNumVertices();
@@ -82,6 +87,12 @@ namespace MueLu {
     std::vector<int> aggWeight    (numLocalAggregates, 0);
     std::vector<int> connectWeight(numRows, defaultConnectWeight);
     std::vector<int> aggPenalties (numRows, 0);
+
+    LO checkNumAggregated = 0;
+    for(LO i = 0; i < numRows; ++i) {
+      if(aggStat[i] == AGGREGATED) { ++checkNumAggregated;}
+    }
+    std::cout << "Number of nodes marked AGGREGATED in aggStat: " << checkNumAggregated << std::endl;
 
     // We do this cycle twice.
     // I don't know why, but ML does it too

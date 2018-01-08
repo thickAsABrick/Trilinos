@@ -65,7 +65,12 @@ namespace MueLu {
   // Try to stick unaggregated nodes into a neighboring aggregate if they are
   // not already too big. Otherwise, make a new aggregate
   template <class LocalOrdinal, class GlobalOrdinal, class Node>
-  void AggregationPhase3Algorithm_kokkos<LocalOrdinal, GlobalOrdinal, Node>::BuildAggregates(const ParameterList& params, const LWGraph_kokkos& graph, Aggregates_kokkos& aggregates, std::vector<unsigned>& aggStat, LO& numNonAggregatedNodes, typename LWGraph_kokkos::local_graph_type::entries_type::non_const_type::HostMirror& h_colors) const {
+  void AggregationPhase3Algorithm_kokkos<LocalOrdinal, GlobalOrdinal, Node>::
+  BuildAggregates(const ParameterList& params, const LWGraph_kokkos& graph,
+                  Aggregates_kokkos& aggregates, std::vector<unsigned>& aggStat,
+                  LO& numNonAggregatedNodes, Kokkos::View<LO*,
+                  typename MueLu::LWGraph_kokkos<LO, GO, Node>::local_graph_type::device_type::
+                  memory_space>& colorsDevice, LO& numColors) const {
     Monitor m(*this, "BuildAggregates");
 
     bool error_on_isolated = false;

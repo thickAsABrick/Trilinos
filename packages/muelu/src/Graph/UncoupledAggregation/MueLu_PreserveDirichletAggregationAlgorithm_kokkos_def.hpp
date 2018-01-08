@@ -63,7 +63,12 @@
 namespace MueLu {
 
   template <class LocalOrdinal, class GlobalOrdinal, class Node>
-  void PreserveDirichletAggregationAlgorithm_kokkos<LocalOrdinal, GlobalOrdinal, Node>::BuildAggregates(Teuchos::ParameterList const & params, LWGraph_kokkos const & graph, Aggregates_kokkos & aggregates, std::vector<unsigned>& aggStat, LO& numNonAggregatedNodes, typename LWGraph_kokkos::local_graph_type::entries_type::non_const_type::HostMirror& h_colors) const {
+  void PreserveDirichletAggregationAlgorithm_kokkos<LocalOrdinal, GlobalOrdinal, Node>::
+  BuildAggregates(Teuchos::ParameterList const & params, LWGraph_kokkos const & graph,
+                  Aggregates_kokkos & aggregates, std::vector<unsigned>& aggStat,
+                  LO& numNonAggregatedNodes, Kokkos::View<LO*,
+                  typename MueLu::LWGraph_kokkos<LO, GO, Node>::local_graph_type::device_type::
+                  memory_space>& colorsDevice, LO& numColors) const {
     Monitor m(*this, "BuildAggregates");
 
     bool preserve = params.get<bool>("aggregation: preserve Dirichlet points");

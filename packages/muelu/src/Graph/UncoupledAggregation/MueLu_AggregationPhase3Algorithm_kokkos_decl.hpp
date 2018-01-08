@@ -102,7 +102,12 @@ namespace MueLu {
 
     /*! @brief Local aggregation. */
 
-    void BuildAggregates(const ParameterList& params, const LWGraph_kokkos& graph, Aggregates_kokkos& aggregates, std::vector<unsigned>& aggStat, LO& numNonAggregatedNodes, typename LWGraph_kokkos::local_graph_type::entries_type::non_const_type::HostMirror& h_colors) const;
+    void BuildAggregates(const ParameterList& params, const LWGraph_kokkos& graph,
+                         Aggregates_kokkos& aggregates, std::vector<unsigned>& aggStat,
+                         LO& numNonAggregatedNodes,
+                         Kokkos::View<LO*, typename MueLu::LWGraph_kokkos<LO, GO, Node>::
+                         local_graph_type::device_type::memory_space>& colorsDevice,
+                         LO& numColors) const;
     //@}
 
     std::string description() const { return "Phase 3 (cleanup)"; }

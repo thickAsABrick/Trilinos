@@ -145,7 +145,8 @@ namespace MueLu {
     bDefinitionPhase_ = false;  // definition phase is finished, now all aggregation algorithm information is fixed
 
     if (pL.get<int>("aggregation: max agg size") == -1)
-      pL.set("aggregation: max agg size", INT_MAX);
+      pL.set("aggregation: max agg size", Teuchos::OrdinalTraits<int>::max());
+      // pL.set("aggregation: max agg size",INT_MAX);
 
     // define aggregation algorithms
     RCP<const FactoryBase> graphFact = GetFactory("Graph");
@@ -213,14 +214,16 @@ namespace MueLu {
     LO numNonAggregatedNodes = numRows;
     GO numGlobalAggregatedPrev = 0, numGlobalAggsPrev = 0;
     typedef typename LWGraph_kokkos::local_graph_type graph_t;
-    typedef typename graph_t::entries_type::non_const_type::HostMirror colinds_view;
-    colinds_view h_colors;
+    typedef typename graph_t::device_type::memory_space memory_space;
+    Kokkos::View<LO*, memory_space> colorsDevice("graph colors", numRows);
+    LO numColors = 0;
     for (size_t a = 0; a < algos_.size(); a++) {
       std::string phase = algos_[a]->description();
       SubFactoryMonitor sfm(*this, "Algo \"" + phase + "\"", currentLevel);
 
       int oldRank = algos_[a]->SetProcRankVerbose(this->GetProcRankVerbose());
-      algos_[a]->BuildAggregates(pL, *graph, *aggregates, aggStat, numNonAggregatedNodes, h_colors);
+      algos_[a]->BuildAggregates(pL, *graph, *aggregates, aggStat, numNonAggregatedNodes,
+                                 colorsDevice, numColors);
       algos_[a]->SetProcRankVerbose(oldRank);
 
       if (IsPrint(Statistics1)) {
@@ -240,7 +243,7 @@ namespace MueLu {
         GetOStream(Statistics1) << "  aggregated : " << (numGlobalAggregated - numGlobalAggregatedPrev) << " (phase), " << std::fixed
                                    << std::setprecision(2) << numGlobalAggregated << "/" << numGlobalRows << " [" << aggPercent << "%] (total)\n"
                                    << "  remaining  : " << numGlobalRows - numGlobalAggregated << "\n"
-                                   << "  aggregates : " << numGlobalAggs-numGlobalAggsPrev << " (phase), " << numGlobalAggs << " (total)" << std::endl;
+                                   << "  aggregates : " << numGlobalAggs - numGlobalAggsPrev << " (phase), " << numGlobalAggs << " (total)" << std::endl;
         numGlobalAggregatedPrev = numGlobalAggregated;
         numGlobalAggsPrev       = numGlobalAggs;
       }

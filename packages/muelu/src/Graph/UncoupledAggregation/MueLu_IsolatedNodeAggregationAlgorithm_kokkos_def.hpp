@@ -64,7 +64,11 @@ namespace MueLu {
 
   template <class LocalOrdinal, class GlobalOrdinal, class Node>
   void IsolatedNodeAggregationAlgorithm_kokkos<LocalOrdinal, GlobalOrdinal, Node>::
-  BuildAggregates(const ParameterList& params, const LWGraph_kokkos& graph, Aggregates_kokkos& aggregates, std::vector<unsigned>& aggStat, LO& numNonAggregatedNodes) const {
+  BuildAggregates(const ParameterList& params, const LWGraph_kokkos& graph,
+                  Aggregates_kokkos& aggregates, std::vector<unsigned>& aggStat,
+                  LO& numNonAggregatedNodes, Kokkos::View<LO*,
+                  typename MueLu::LWGraph_kokkos<LO, GO, Node>::local_graph_type::device_type::
+                  memory_space>& colorsDevice, LO& numColors) const {
     Monitor m(*this, "BuildAggregates");
 
     const LO  numRows = graph.GetNodeNumVertices();
