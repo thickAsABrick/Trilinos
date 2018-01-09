@@ -97,13 +97,11 @@ namespace MueLu {
     //can only enforce max aggregate size
     if(algorithm == Algorithm::Distance2)
     {
-      std::cout << "Uncouple Aggregation: using Distance 2 algorithm for coarsening" << std::endl;
       BuildAggregatesDistance2(graph, aggregates, aggStat, numNonAggregatedNodes,
                                maxNodesPerAggregate, colorsDevice, numColors);
     }
     else
     {
-      std::cout << "Uncouple Aggregation: using serial algorithm for coarsening" << std::endl;
       BuildAggregatesSerial(graph, aggregates, aggStat, numNonAggregatedNodes, minNodesPerAggregate,
                             maxNodesPerAggregate, maxNeighAlreadySelected, orderingStr);
     }
@@ -281,10 +279,6 @@ namespace MueLu {
     typedef typename MueLu::LWGraph_kokkos<LO, GO, Node>::local_graph_type graph_t;
     typedef typename graph_t::device_type::memory_space memory_space;
     typedef typename graph_t::device_type::execution_space execution_space;
-    typedef typename graph_t::row_map_type::non_const_type rowptrs_view;
-    typedef Kokkos::View<size_t*, Kokkos::HostSpace> host_rowptrs_view;
-    typedef typename graph_t::entries_type::non_const_type colinds_view;
-    typedef Kokkos::View<LocalOrdinal*, Kokkos::HostSpace> host_colinds_view;
 
     const LO  numRows = graph.GetNodeNumVertices();
     const int myRank  = graph.GetComm()->getRank();
@@ -292,73 +286,10 @@ namespace MueLu {
     auto vertex2AggIdView = aggregates.GetVertex2AggId()->template getLocalView<memory_space>();
     auto procWinnerView = aggregates.GetProcWinner()    ->template getLocalView<memory_space>();
 
-    // Set this for comparison with serial code
     LO numNonAggregatedNodesSerial = numNonAggregatedNodes;
     LO numLocalAggregatesSerial = aggregates.GetNumAggregates();
     LO numLocalAggregates = aggregates.GetNumAggregates();
 
-    //get the sparse local graph in CRS
-    std::vector<LO> rowptrs;
-    rowptrs.reserve(numRows + 1);
-    std::vector<LO> colinds;
-    colinds.reserve(graph.GetNodeNumEdges());
-
-    rowptrs.push_back(0);
-    for(LO row = 0; row < numRows; row++)
-    {
-      auto entries = graph.getNeighborVertices(row);
-      for(LO i = 0; i < entries.length; i++)
-      {
-        colinds.push_back(entries.colidx(i));
-      }
-      rowptrs.push_back(colinds.size());
-    }
-
-    // The local CRS graph to Kokkos device views, then compute graph squared
-    // Note: just using colinds_view in place of scalar_view_t type (it won't
-    // be used at all by symbolic SPGEMM)
-    typedef KokkosKernels::Experimental::
-      KokkosKernelsHandle<typename rowptrs_view::const_value_type,
-                          typename colinds_view::const_value_type,
-                          typename colinds_view::const_value_type,
-                          execution_space,
-                          memory_space, memory_space> KernelHandle;
-
-    KernelHandle kh;
-    //leave gc algorithm choice as the default
-    kh.create_graph_coloring_handle();
-
-    //Create device views for graph rowptrs/colinds
-    rowptrs_view aRowptrs("A device rowptrs", numRows + 1);
-    colinds_view aColinds("A device colinds", colinds.size());
-    // Populate A in temporary host views, then copy to device
-    {
-      host_rowptrs_view aHostRowptrs("A host rowptrs", numRows + 1);
-      for(LO i = 0; i < numRows + 1; i++)
-      {
-        aHostRowptrs(i) = rowptrs[i];
-      }
-      Kokkos::deep_copy(aRowptrs, aHostRowptrs);
-      host_colinds_view aHostColinds("A host colinds", colinds.size());
-      for(size_t i = 0; i < colinds.size(); i++)
-      {
-        aHostColinds(i) = colinds[i];
-      }
-      Kokkos::deep_copy(aColinds, aHostColinds);
-    }
-    //run d2 graph coloring
-    //graph is symmetric so row map/entries and col map/entries are the same
-    KokkosGraph::Experimental::d2_graph_color(&kh, numRows, numRows,
-                                              aRowptrs, aColinds, aRowptrs, aColinds);
-
-    // extract the colors
-    auto coloringHandle = kh.get_graph_coloring_handle();
-    colorsDevice = coloringHandle->get_vertex_colors();
-    numColors = as<LO>(coloringHandle->get_num_colors());
-
-    // These lines will be moved next to the destruction of the graph_coloring_handle when
-    // the kokkos implementation of the phase1 algorithm will be finished as we need the colors
-    // on device until the end of phase 1 at least maybe until the end of phase 2 or 3...
     typename LWGraph_kokkos::local_graph_type::entries_type::non_const_type::
       HostMirror h_colors = Kokkos::create_mirror_view(colorsDevice);
     Kokkos::deep_copy(h_colors, colorsDevice);
@@ -371,12 +302,12 @@ namespace MueLu {
                          });
     Kokkos::deep_copy (d_aggStatView, h_aggStatView);
 
-    Kokkos::View<LO, memory_space> aggCountKokkos("aggCount");
+    Kokkos::View<LO, memory_space> aggCount("aggCount");
     LO tmpNumLocalAggregates = 0;
     Kokkos::parallel_reduce("Aggregation Phase 1: initial scan over color == 1", numRows,
                             KOKKOS_LAMBDA (const LO i, LO& lnumLocalAggregates) {
                               if(colorsDevice(i) == 1 && d_aggStatView(i) == READY) {
-                                const LO idx = Kokkos::atomic_fetch_add (&aggCountKokkos(), 1);
+                                const LO idx = Kokkos::atomic_fetch_add (&aggCount(), 1);
                                 vertex2AggIdView(i, 0) = idx;
                                 d_aggStatView(i) = AGGREGATED;
                                 ++lnumLocalAggregates;
@@ -385,15 +316,14 @@ namespace MueLu {
                             }, tmpNumLocalAggregates);
     numLocalAggregates += tmpNumLocalAggregates;
 
-    //clean up coloring handle
-    kh.destroy_graph_coloring_handle();
-
     // Compute the initial size of the aggregates.
     // Note lbv 12-21-17: I am pretty sure that the aggregates will always be of size 1
     //                    at this point so we could simplify the code below a lot if this
     //                    assumption is correct...
     Kokkos::View<LO*, memory_space> d_aggSizesView("aggSizes", numLocalAggregates);
     {
+      // Here there is a possibility that two vertices assigned to two different threads contribute
+      // to the same aggregates
       auto d_aggSizesScatterView = Kokkos::Experimental::create_scatter_view(d_aggSizesView);
       Kokkos::parallel_for("Aggregation Phase 1: compute initial aggregates size", numRows,
                            KOKKOS_LAMBDA (const LO i) {
