@@ -91,7 +91,7 @@ namespace MueLu {
     Kokkos::deep_copy(d_aggStatView,    h_aggStatView);
 
     auto vertex2AggId = aggregates.GetVertex2AggId()->template getLocalView<memory_space>();
-    auto procWinner = aggregates.GetProcWinner()    ->template getLocalView<memory_space>();
+    auto procWinner   = aggregates.GetProcWinner()  ->template getLocalView<memory_space>();
 
     LO numLocalNodes      = numRows;
     LO numLocalAggregated = numLocalNodes - numNonAggregatedNodes;
@@ -100,10 +100,14 @@ namespace MueLu {
     double       factor    = as<double>(numLocalAggregated)/(numLocalNodes+1);
     factor = pow(factor, aggFactor);
 
+    Kokkos::View<LO, memory_space> numLocalAggregates("numLocalAggregates");
+    typename Kokkos::View<LO, memory_space>::HostMirror h_numLocalAggregates =
+      Kokkos::create_mirror_view(numLocalAggregates);
+    h_numLocalAggregates() = aggregates.GetNumAggregates();
+    Kokkos::deep_copy(numLocalAggregates, h_numLocalAggregates);
+
     // Now we create new aggregates using root nodes in all colors other than the first color,
     // as the first color was already exhausted in Phase 1.
-    Kokkos::View<LO, memory_space> numLocalAggregates("numLocalAggregates");
-    numLocalAggregates() = aggregates.GetNumAggregates();
     for(int color = 1; color < numColors + 1; ++color) {
 
       LO tmpNumNonAggregatedNodes = 0;
@@ -118,7 +122,7 @@ namespace MueLu {
                                   // Loop over neighbors to count how many nodes could join
                                   // the new aggregate
                                   LO numNeighbors = 0;
-                                  for(size_t j = 0; j < neighbors.length; ++j) {
+                                  for(int j = 0; j < neighbors.length; ++j) {
                                     LO neigh = neighbors(j);
                                     if(neigh != rootCandidate) {
                                       if(graph.isLocalNeighborVertex(neigh) &&
@@ -140,7 +144,7 @@ namespace MueLu {
                                     LO aggIndex = Kokkos::
                                       atomic_fetch_add(&numLocalAggregates(), 1);
 
-                                    for(size_t j = 0; j < neighbors.length; ++j) {
+                                    for(int j = 0; j < neighbors.length; ++j) {
                                       LO neigh = neighbors(j);
                                       if(neigh != rootCandidate) {
                                         if(graph.isLocalNeighborVertex(neigh) &&
@@ -169,7 +173,6 @@ namespace MueLu {
     Kokkos::deep_copy(aggStatUMView, h_aggStatView);
 
     // update aggregate object
-    auto h_numLocalAggregates = Kokkos::create_mirror_view (numLocalAggregates);
     Kokkos::deep_copy(h_numLocalAggregates, numLocalAggregates);
     aggregates.SetNumAggregates(h_numLocalAggregates());
   }
