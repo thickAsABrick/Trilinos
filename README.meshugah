@@ -1,0 +1,6 @@
+Created by: Ramesh "Meshugah" Balakrishnan
+Created on: March 19, 2018
+Created at: Argonne National Laboratory
+
+Legend: the purpose of this meshugah "branch" in the thickAsABrick/Trilinos "fork" is to document some of the crazy 
+        hacks I have had to make, in order to get this (crazy) package to work on some very large computing platforms.
